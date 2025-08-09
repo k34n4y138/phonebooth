@@ -1,4 +1,5 @@
 FROM pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime
+LABEL org.opencontainers.image.authors="Zakaria Moumen <keanay@1337.ma>"
 RUN apt update && apt install -y curl gnupg
 
 

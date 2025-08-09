@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Phonebooth Demo</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg,#ece9e6 0%,#ffffff 100%);
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    .card {
+      background: #fff;
+      padding: 32px 48px;
+      border-radius: 12px;
+      box-shadow: 0 8px 16px rgba(0,0,0,0.12);
+      width: 100%;
+      max-width: 720px;
+    }
+    h1 { margin-top: 0; text-align: center; }
+    #controls { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-bottom: 24px; }
+    select, button, input {
+      padding: 10px 14px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      background: #fff;
+    }
+    button:hover { background:#f7f7f7; cursor: pointer; }
+    #history { max-height: 260px; overflow-y: auto; margin-top: 24px; border-top:1px solid #eee; padding-top: 16px; }
+    .entry { padding: 6px 0; border-bottom:1px dotted #eee; display:flex; justify-content:space-between; gap:8px; }
+    .entry span { flex:1; white-space: pre-wrap; }
+    .reuse { font-size:0.9rem; color:#3498db; cursor:pointer; }
+    .reuse:hover { text-decoration: underline; }
+    #status { text-align:center; margin-bottom: 20px; font-size:0.95rem; color:#666; min-height: 24px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Phonebooth Demo</h1>
+
+  <div id="status">Loading voices…</div>
+  <div id="controls">
+    <button id="recBtn">🎙️ Hold to Speak</button>
+    <input id="textInput" placeholder="Type or reuse transcribed text…" style="flex:1; min-width:180px;" />
+    <select id="voiceSelect"></select>
+    <button id="synthBtn">▶ Speak</button>
+  </div>
+
+  <div id="history"></div>
+</div>
+
+<script>
+(async() => {
+  const statusEl = document.getElementById('status');
+  function setStatus(msg) { statusEl.textContent = msg||''; }
+
+  // ------- Populate voices -------
+  const voiceSelect = document.getElementById('voiceSelect');
+  try {
+    const resp = await fetch('/speakers');
+    if(!resp.ok) throw new Error('Failed to load voices');
+    const voices = await resp.json(); // {"0":"Alice",...}
+    Object.entries(voices).forEach(([id,name]) => {
+      const opt = document.createElement('option');
+      opt.value = id; opt.textContent = `${id} – ${name}`;
+      voiceSelect.appendChild(opt);
+    });
+    setStatus('Idle');
+  } catch(err) {
+    setStatus(err.message);
+  }
+
+  // ------- Audio recording helpers -------
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  let recBuffers = [], recording = false, sampleRate;
+  const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  const source = audioCtx.createMediaStreamSource(stream);
+  const processor = audioCtx.createScriptProcessor(4096,1,1);
+  processor.onaudioprocess = e => { if(recording) recBuffers.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  source.connect(processor); processor.connect(audioCtx.destination);
+  sampleRate = audioCtx.sampleRate;
+
+  function encodeWav(buffers, sr) {
+    const len = buffers.reduce((a,b)=>a+b.length,0);
+    const buf = new ArrayBuffer(44 + len*2);
+    const view = new DataView(buf);
+    const writeStr = (o,s) => { for(let i=0;i<s.length;i++) view.setUint8(o+i,s.charCodeAt(i)); };
+    writeStr(0,'RIFF'); view.setUint32(4,36+len*2,true); writeStr(8,'WAVE'); writeStr(12,'fmt ');
+    view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true); view.setUint32(24,sr,true);
+    view.setUint32(28,sr*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true); writeStr(36,'data');
+    view.setUint32(40,len*2,true);
+    let offset=44;
+    buffers.forEach(ch=>{ for(let i=0;i<ch.length;i++){ const s=Math.max(-1,Math.min(1,ch[i])); view.setInt16(offset,s<0?s*0x8000:s*0x7FFF,true); offset+=2; }});
+    return new Uint8Array(buf);
+  }
+
+  // ------- History helpers -------
+  const historyEl = document.getElementById('history');
+  function addEntry(text) {
+    const div=document.createElement('div'); div.className='entry';
+    const span=document.createElement('span'); span.textContent=text; div.appendChild(span);
+    const a=document.createElement('a'); a.textContent='↻ reuse'; a.className='reuse';
+    a.onclick=()=>{ document.getElementById('textInput').value=text; };
+    div.appendChild(a);
+    historyEl.prepend(div);
+  }
+
+  // ------- Transcription logic -------
+  const recBtn=document.getElementById('recBtn');
+  let btnHold=false;
+  recBtn.addEventListener('mousedown',startRec);
+  recBtn.addEventListener('touchstart',startRec);
+  recBtn.addEventListener('mouseup',stopRec);
+  recBtn.addEventListener('mouseleave',()=>{ if(btnHold) stopRec(); });
+  recBtn.addEventListener('touchend',stopRec);
+
+  function startRec(e){ e.preventDefault(); if(recording) return; btnHold=true; recBuffers.length=0; recording=true; setStatus('Recording…'); }
+  async function stopRec(e){ e.preventDefault(); if(!recording) return; btnHold=false; recording=false; setStatus('Transcribing…');
+    const wav=encodeWav(recBuffers,sampleRate);
+    const fd=new FormData(); fd.append('file', new Blob([wav], {type:'audio/wav'}), 'input.wav');
+    try{
+      const resp=await fetch('/transcribe',{method:'POST',body:fd});
+      if(!resp.ok) throw new Error('Transcription failed');
+      const data=await resp.json();
+      const text=data.text.trim();
+      if(text){ addEntry(text); document.getElementById('textInput').value=text; }
+      setStatus('Idle');
+    }catch(err){ setStatus(err.message); }
+  }
+
+  // ------- Synthesis logic -------
+  const synthBtn=document.getElementById('synthBtn');
+  synthBtn.onclick=async()=>{
+    const text=document.getElementById('textInput').value.trim();
+    if(!text){ setStatus('Enter text first'); return; }
+    const speaker=voiceSelect.value;
+    setStatus('Synthesizing…');
+    try{
+      const resp=await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text, speaker})});
+      if(!resp.ok) throw new Error('TTS failed');
+      const blob=await resp.blob();
+      const arrayBuffer=await blob.arrayBuffer();
+      const audioBuf=await audioCtx.decodeAudioData(arrayBuffer);
+      const src=audioCtx.createBufferSource(); src.buffer=audioBuf; src.connect(audioCtx.destination);
+      src.start();
+      addEntry(text);
+      setStatus('Speaking…');
+      src.onended=()=>setStatus('Idle');
+    }catch(err){ setStatus(err.message); }
+  };
+})();
+</script>
+</body>
+</html>

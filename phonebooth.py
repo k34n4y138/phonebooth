@@ -23,9 +23,10 @@ Keeping the two access patterns together guarantees that every place in the
 codebase re-uses the **same** model instances and therefore the same GPU
 memory.
 """
+__author__: str = "Zakaria Moumen <keanay@1337.ma>"
 
 from fastapi import FastAPI, UploadFile, File, Query
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from TTS.api import TTS
@@ -39,6 +40,7 @@ import logging
 import py3langid as langid
 from typing import Callable, Any, cast
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -232,6 +234,17 @@ async def tts_stream_endpoint(req: TTSRequest) -> StreamingResponse:  # noqa: D4
 async def speakers_endpoint() -> dict[str, str]:  # noqa: D401
     """Return mapping of numeric speaker indices to names."""
     return XTTS_SPEAKERS
+
+
+# ---------------------------------------------------------------------------
+# Demo page – simple browser client (phonebooth/demo.html)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/demo", response_class=FileResponse)
+async def demo_page() -> FileResponse:  # noqa: D401
+    """Return the static demo HTML page bundled with the package."""
+    return FileResponse(Path(__file__).with_name("demo.html"), media_type="text/html")
 
 __all__ = [
     "DEVICE",
