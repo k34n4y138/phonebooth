@@ -1,0 +1,9 @@
+
+coqui-tts==0.27.0
+faster-whisper==1.2.0
+torchaudio==2.7.1
+py3langid==0.3.0
+asyncio==3.4.3
+fastapi==0.115.12
+uvicorn==0.34.2
+python-multipart==0.0.20
