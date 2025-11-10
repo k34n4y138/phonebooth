@@ -48,6 +48,7 @@
 
   <div id="status">Loading voices…</div>
   <div id="controls">
+    <input id="apiKeyInput" type="password" placeholder="API Key (optional)" style="width:100%; margin-bottom:12px;" />
     <button id="recBtn">🎙️ Hold to Speak</button>
     <input id="textInput" placeholder="Type or reuse transcribed text…" style="flex:1; min-width:180px;" />
     <select id="voiceSelect"></select>
@@ -62,10 +63,20 @@
   const statusEl = document.getElementById('status');
   function setStatus(msg) { statusEl.textContent = msg||''; }
 
+  // ------- API Key helper -------
+  function getHeaders() {
+    const apiKey = document.getElementById('apiKeyInput').value.trim();
+    const headers = {};
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+    return headers;
+  }
+
   // ------- Populate voices -------
   const voiceSelect = document.getElementById('voiceSelect');
   try {
-    const resp = await fetch('/speakers');
+    const resp = await fetch('/speakers', { headers: getHeaders() });
     if(!resp.ok) throw new Error('Failed to load voices');
     const voices = await resp.json(); // {"0":"Alice",...}
     Object.entries(voices).forEach(([id,name]) => {
@@ -127,7 +138,7 @@
     const wav=encodeWav(recBuffers,sampleRate);
     const fd=new FormData(); fd.append('file', new Blob([wav], {type:'audio/wav'}), 'input.wav');
     try{
-      const resp=await fetch('/transcribe',{method:'POST',body:fd});
+      const resp=await fetch('/transcribe',{method:'POST',headers:getHeaders(),body:fd});
       if(!resp.ok) throw new Error('Transcription failed');
       const data=await resp.json();
       const text=data.text.trim();
@@ -144,7 +155,9 @@
     const speaker=voiceSelect.value;
     setStatus('Synthesizing…');
     try{
-      const resp=await fetch('/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+      const headers = getHeaders();
+      headers['Content-Type'] = 'application/json';
+      const resp=await fetch('/tts',{method:'POST',headers:headers,
         body: JSON.stringify({text, speaker})});
       if(!resp.ok) throw new Error('TTS failed');
       const blob=await resp.blob();

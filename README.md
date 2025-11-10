@@ -53,7 +53,9 @@ wav_np = await pb.synthesize("Bonjour le monde!", speaker="1")
 uvicorn phonebooth:app --host 0.0.0.0 --port 8000
 ```
 
-*Swagger UI* will be available on the root path `/`.
+*Swagger UI* will be available on the root path `/` by default. Set `ENABLE_DOCS=false` to disable it.
+
+**Proxy subroute support**: When serving behind nginx or another reverse proxy at a subroute (e.g., `https://example.com/api/phonebooth`), set the `ROOT_PATH` environment variable to the subroute path (e.g., `/api/phonebooth`). This ensures URLs in OpenAPI docs and responses are generated correctly.
 
 ```text
 POST /transcribe   → { "text": "…" }
@@ -74,10 +76,20 @@ docker build -t phonebooth .
 docker run --gpus all -p 8000:8000 \
            -e NVIDIA_VISIBLE_DEVICES=0 \  # optional, limit GPU
            -e COQUI_TOS_AGREED=1 \         # agree to XTTS terms
+           -e API_KEY=your-secret-key \    # optional, enable API authentication
            phonebooth
 ```
 
 Container start-up is now instant because the heavy models were already loaded at build time (`RUN python phonebooth.py`).
+
+**Docker Compose**: A `compose.yml` file is included for easy deployment. Copy `env.example` to `.env` and update the values:
+
+```bash
+cp env.example .env
+# Edit .env with your preferred values
+```
+
+The compose file will automatically load variables from `.env` (the file is gitignored for security). See `env.example` for all available configuration options.
 
 ---
 
@@ -102,6 +114,9 @@ await synthesize(text: str, speaker: str | None = None) -> numpy.ndarray
 | POST   | `/tts`        | JSON: `{text, speaker}`            | `audio/wav`             |
 | POST   | `/tts_stream` | JSON: `{text, speaker, chunk_seconds}` | binary stream *(2 s chunks by default)* |
 | GET    | `/speakers`   | –                                  | `{ "id": "name", … }` |
+| GET    | `/demo`       | –                                  | HTML demo page *(requires `ENABLE_DEMO=true`)* |
+
+**Authentication**: When the `API_KEY` environment variable is set, all API endpoints (except `/demo`) require Bearer token authentication. Include the header `Authorization: Bearer <your-api-key>` in requests. The `/demo` page is publicly accessible (when enabled) and includes an optional API key input field for authenticated API calls.
 
 Streaming TTS chunks let you start playback while the rest of the sentence is still being synthesised – ideal for real-time chat assistants.
 
@@ -111,6 +126,10 @@ Streaming TTS chunks let you start playback while the rest of the sentence is st
 
 Variable | Purpose | Default
 ---------|----------|--------
+`API_KEY` | API key for Bearer token authentication. When set, all endpoints (except `/demo`) require `Authorization: Bearer <key>` header | –
+`ENABLE_DEMO` | Enable the `/demo` endpoint. Set to `true`, `1`, or `yes` to enable the demo page | `false`
+`ENABLE_DOCS` | Enable OpenAPI documentation (Swagger UI). Set to `false`, `0`, or `no` to disable | `true`
+`ROOT_PATH` | Root path when served behind a reverse proxy at a subroute (e.g., `/api/phonebooth`). Leave empty for root deployment | –
 `COQUI_TOS_AGREED` | Must be set to `1` to silence the XTTS licence prompt | –
 `GLOG_minloglevel` | Reduce TensorFlow/Whisper spam (`export GLOG_minloglevel=2`) | –
 

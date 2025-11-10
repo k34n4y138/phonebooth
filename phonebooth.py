@@ -25,8 +25,9 @@ memory.
 """
 __author__: str = "Zakaria Moumen <keanay@1337.ma>"
 
-from fastapi import FastAPI, UploadFile, File, Query
+from fastapi import FastAPI, UploadFile, File, Query, Header, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from TTS.api import TTS
@@ -38,7 +39,8 @@ import torchaudio
 import numpy as np
 import logging
 import py3langid as langid
-from typing import Callable, Any, cast
+import os
+from typing import Callable, Any, cast, Optional
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -72,7 +74,7 @@ XTTS.to(DEVICE)
 
 # Speaker utilities ----------------------------------------------------------
 XTTS_SPEAKERS: dict[str, str] = {f"{idx}": name for idx, name in enumerate(XTTS.speakers)}
-XTTS_DEFAULT_SPEAKER_IDX: int = 0
+XTTS_DEFAULT_SPEAKER_IDX: int = 52
 _XTTS_LOCK = asyncio.Lock()
 _XTTS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
@@ -148,6 +150,52 @@ async def synthesize(text: str, speaker: str | None = None) -> np.ndarray:  # no
     return wav  # type: ignore[return-value]
 
 # ---------------------------------------------------------------------------
+# API Key Authentication
+# ---------------------------------------------------------------------------
+API_KEY: Optional[str] = os.getenv("API_KEY")
+# Normalize empty string to None
+if API_KEY == "":
+    API_KEY = None
+if API_KEY:
+    logger.info("API key authentication enabled")
+else:
+    logger.info("API key authentication disabled (API_KEY env var not set)")
+
+async def verify_api_key(request: Request) -> None:
+    """Verify API key from Authorization Bearer token header.
+    
+    If API_KEY environment variable is set, authentication is required.
+    If not set, authentication is optional and all requests are allowed.
+    """
+    if not API_KEY:
+        # Authentication disabled - allow all requests
+        return
+    
+    authorization = request.headers.get("Authorization")
+    if authorization is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authorization header. Please provide Authorization: Bearer <token> header.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Parse Bearer token
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header format. Expected: Bearer <token>",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = authorization[7:].strip()  # Remove "Bearer " prefix
+    
+    if token != API_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key.",
+        )
+
+# ---------------------------------------------------------------------------
 # FastAPI application – optional, provides micro-service interface
 # ---------------------------------------------------------------------------
 
@@ -155,7 +203,7 @@ async def _wav_chunks(
     wav: np.ndarray,
     *,
     sample_rate: int = 24_000,
-    chunk_seconds: int = 2,
+    chunk_seconds: int = 3,
 ):
     """Yield *chunk_seconds*-second WAV chunks for *wav* (NumPy array).
 
@@ -177,13 +225,46 @@ async def _wav_chunks(
         torchaudio.save(buf, tensor_chunk.unsqueeze(0).cpu(), sample_rate, format="wav", bits_per_sample=16)
         yield buf.getvalue()
 
-app = FastAPI(title="Phonebooth – STT/TTS Service", docs_url="/", redoc_url=None)
+# ---------------------------------------------------------------------------
+# FastAPI app initialization
+# ---------------------------------------------------------------------------
+# Proxy subroute support - when served behind nginx at a subroute
+ROOT_PATH = os.getenv("ROOT_PATH", "").rstrip("/")
+if ROOT_PATH:
+    logger.info("Proxy subroute configured: %s", ROOT_PATH)
+    # Ensure root_path starts with / for FastAPI
+    if not ROOT_PATH.startswith("/"):
+        ROOT_PATH = "/" + ROOT_PATH
+else:
+    ROOT_PATH = ""
+
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() not in ("false", "0", "no")
+docs_url = ROOT_PATH + "/" if ENABLE_DOCS else None
+redoc_url = None
+if ENABLE_DOCS:
+    logger.info("OpenAPI docs enabled at %s", docs_url or "/")
+else:
+    logger.info("OpenAPI docs disabled (set ENABLE_DOCS=true to enable)")
+
+app = FastAPI(
+    title="Phonebooth – STT/TTS Service",
+    docs_url=docs_url,
+    redoc_url=redoc_url,
+    root_path=ROOT_PATH,
+)
+
+# Add middleware to trust proxy headers (X-Forwarded-*)
+# This is important when running behind nginx or other reverse proxies
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"],  # Allow all hosts when behind proxy
+)
 
 class TranscriptionOut(BaseModel):
     text: str
 
 
-@app.post("/transcribe", response_model=TranscriptionOut)
+@app.post("/transcribe", response_model=TranscriptionOut, dependencies=[Depends(verify_api_key)])
 async def transcribe_endpoint(file: UploadFile = File(...)) -> TranscriptionOut:  # noqa: D401
     """Transcribe the uploaded WAV and return detected text."""
     raw = await file.read()
@@ -198,7 +279,7 @@ class TTSRequest(BaseModel):
     chunk_seconds: int = Query(2, ge=1, le=30, description="Seconds per audio chunk for streaming endpoint (default 2)")
 
 
-@app.post("/tts")
+@app.post("/tts", dependencies=[Depends(verify_api_key)])
 async def tts_endpoint(req: TTSRequest) -> StreamingResponse:  # noqa: D401
     """Return synthesised WAV for *req.text* using speaker *req.speaker*."""
     wav_np = await synthesize(req.text, req.speaker)
@@ -215,7 +296,7 @@ async def tts_endpoint(req: TTSRequest) -> StreamingResponse:  # noqa: D401
 # ---------------------------------------------------------------------------
 
 
-@app.post("/tts_stream")
+@app.post("/tts_stream", dependencies=[Depends(verify_api_key)])
 async def tts_stream_endpoint(req: TTSRequest) -> StreamingResponse:  # noqa: D401
     """Stream WAV chunks for *req.text* using speaker *req.speaker*.
 
@@ -230,7 +311,7 @@ async def tts_stream_endpoint(req: TTSRequest) -> StreamingResponse:  # noqa: D4
     return StreamingResponse(streamer(), media_type="application/octet-stream")
 
 
-@app.get("/speakers")
+@app.get("/speakers", dependencies=[Depends(verify_api_key)])
 async def speakers_endpoint() -> dict[str, str]:  # noqa: D401
     """Return mapping of numeric speaker indices to names."""
     return XTTS_SPEAKERS
@@ -239,12 +320,16 @@ async def speakers_endpoint() -> dict[str, str]:  # noqa: D401
 # ---------------------------------------------------------------------------
 # Demo page – simple browser client (phonebooth/demo.html)
 # ---------------------------------------------------------------------------
-
-
-@app.get("/demo", response_class=FileResponse)
-async def demo_page() -> FileResponse:  # noqa: D401
-    """Return the static demo HTML page bundled with the package."""
-    return FileResponse(Path(__file__).with_name("demo.html"), media_type="text/html")
+ENABLE_DEMO = os.getenv("ENABLE_DEMO", "").lower() in ("true", "1", "yes")
+if ENABLE_DEMO:
+    logger.info("Demo page enabled at /demo")
+    
+    @app.get("/demo", response_class=FileResponse)
+    async def demo_page() -> FileResponse:  # noqa: D401
+        """Return the static demo HTML page bundled with the package."""
+        return FileResponse(Path(__file__).with_name("demo.html"), media_type="text/html")
+else:
+    logger.info("Demo page disabled (set ENABLE_DEMO=true to enable)")
 
 __all__ = [
     "DEVICE",

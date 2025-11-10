@@ -8,16 +8,15 @@ RUN echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-keyring.gpg] https://de
 RUN apt update && apt install -y libcudnn9-cuda-12
 
 
-COPY . /app/
-
 WORKDIR /app
 
+COPY requirements.txt /app/
 RUN pip install -r requirements.txt
+
+COPY phonebooth.py demo.html /app/
 
 ENV COQUI_TOS_AGREED=1
 RUN python phonebooth.py #load models
 
 CMD ["uvicorn", "phonebooth:app", "--host", "0.0.0.0", "--port", "8000"]
-
-
 

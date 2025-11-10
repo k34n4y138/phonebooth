@@ -1,0 +1,21 @@
+services:
+  phonebooth:
+    build: .
+    image: phonebooth:latest
+    container_name: phonebooth
+    ports:
+      - "13338:8000"
+    env_file:
+      - .env
+    environment:
+      - COQUI_TOS_AGREED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    volumes:
+      - ./model-cache:/root/.cache
+    restart: unless-stopped
